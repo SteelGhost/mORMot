@@ -946,10 +946,14 @@ type
     property ServicesRouting: TSQLRestRoutingAbstractClass read fServicesRouting;
   end;
 
+  TOnAuthenticationFailed = procedure(Retry: integer) of object;
+
   /// REST client access class
   TSQLRestClientURI = class(TSQLRest)
   protected
     fAuthentication: TSQLRestServerAuthentication;
+    fOnAuthenticationFailed: TOnAuthenticationFailed;
+    fAuthenticationRetries: integer;
     fOnlyJSONRequests: boolean;
     fRunningClientDriven: TStringList;
     {$ifdef ISSMS}
@@ -1039,13 +1043,13 @@ type
     /// wrapper to the protected URI method to call a method on the server
     // - perform a ModelRoot/[TableName/[ID/]]MethodName RESTful GET request
     // - if no Table is expected, set aTable=nil (we do not define nil as
-    // default parameter, since the SMS compiler is sometimes confused) 
+    // default parameter, since the SMS compiler is sometimes confused)
     procedure CallBackGet(const aMethodName: string;
       const aNameValueParameters: array of const; var Call: TSQLRestURIParams;
       aTable: TSQLRecordClass; aID: TID=0);
     /// decode "result":... content as returned by CallBackGet()
     // - if no Table is expected, set aTable=nil (we do not define nil as
-    // default parameter, since the SMS compiler is sometimes confused) 
+    // default parameter, since the SMS compiler is sometimes confused)
     function CallBackGetResult(const aMethodName: string;
       const aNameValueParameters: array of const;
       aTable: TSQLRecordClass; aID: TID=0): string;
@@ -1065,7 +1069,7 @@ type
     // - you should not call it, but directly TServiceClient* methods
     procedure CallRemoteServiceAsynch(aCaller: TServiceClientAbstract;
       const aMethodName: string; aExpectedOutputParamsCount: integer;
-      const aInputParams: array of variant; 
+      const aInputParams: array of variant;
       onSuccess: procedure(res: array of Variant); onError: TSQLRestEvent;
       aReturnsCustomAnswer: boolean=false);
     /// synchronous execution a specified interface-based service method on the server
@@ -1093,11 +1097,15 @@ type
     property OnlyJSONRequests: boolean read fOnlyJSONRequests write fOnlyJSONRequests;
     /// if not nil, point to the current authentication session running
     property Authentication: TSQLRestServerAuthentication read fAuthentication;
+
+    property OnAuthenticationFailed: TOnAuthenticationFailed read fOnAuthenticationFailed write fOnAuthenticationFailed;
+
+
   end;
 
   {$ifndef ISSMS}
   TSQLRestClientHTTP = class;
-  
+
   /// thread used to asynchronously log to a remote client
   TSQLRestLogClientThread = class(TThread)
   protected
@@ -1321,16 +1329,23 @@ function UrlDecode(const aValue: string): string;
 // - use e.g. location := GetOutHeader(Call,'location');
 function GetOutHeader(const Call: TSQLRestURIParams; const Name: string): string;
 
+function StatusCodeIsSuccess(Code: integer): boolean;
+
 const
   /// the first field in TSQLFieldBits is always ID/RowID
   ID_SQLFIELD: TSQLFieldBit = TSQLFieldBit(0);
-  
+
 var
   /// contains no field bit set
   NO_SQLFIELDBITS: TSQLFieldBits;
 
 
 implementation
+
+function StatusCodeIsSuccess(Code: integer): boolean;
+begin
+  result := (Code>=HTTP_SUCCESS) and (Code<HTTP_BADREQUEST); // 200..399
+end;
 
 {$ifdef ISDWS}
 function VarIsValidRef(const aRef: Variant): Boolean;
@@ -2820,6 +2835,15 @@ begin
       fAuthentication.ClientSessionComputeSignature(self,Call.Url);
   end;
   InternalURI(Call);
+
+  if (Call.OutStatus = HTTP_FORBIDDEN) and Assigned(fOnAuthenticationFailed) then
+  begin
+    inc(fAuthenticationRetries);
+    fOnAuthenticationFailed(fAuthenticationRetries);
+  end
+  else
+    fAuthenticationRetries := 0;
+
   InternalStateUpdate(Call);
 end;
 
